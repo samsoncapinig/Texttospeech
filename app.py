@@ -1,30 +1,39 @@
 import streamlit as st
-from gtts import gTTS
+from google.cloud import texttospeech
 from io import BytesIO
-import asyncio
-import edge_tts
-import aiohttp
+from gtts import gTTS
+import os
 
-st.title("Text to Speech Converter 🇵🇭🇺🇸")
-st.write("Convert text to Filipino or English speech with natural voices!")
+st.title("🌐 Text to Speech Converter (Filipino + English)")
+st.write("Convert text into natural voices online!")
 
-# Voice selection
+# ---- GOOGLE CLOUD CREDENTIALS ----
+# You must have a service-account JSON key from Google Cloud.
+# In Streamlit Cloud → Settings → Secrets → add:
+# [google]
+# credentials = <paste the JSON key here>
+if "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ and "google" in st.secrets:
+    creds_file = "/tmp/google_key.json"
+    with open(creds_file, "w") as f:
+        f.write(st.secrets["google"]["credentials"])
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_file
+
+# ---- Voice Selection ----
 voice_choice = st.selectbox(
     "Choose a voice:",
     [
         "Filipino (Default)",
-        "English - Male (Ryan)",
-        "English - Male (Eric)",
-        "English - Male (Guy)",
-        "English - Female (Jenny)",
+        "English - Male (John)",
+        "English - Male (Matthew)",
+        "English - Female (Joanna)",
         "English - Female (Aria)",
     ],
 )
 
-# Text input
+# ---- Text Input ----
 text = st.text_area("Enter your text:", "")
 
-# Convert button
+# ---- Convert Button ----
 if st.button("Convert to Speech"):
     if text.strip() == "":
         st.warning("⚠️ Please enter some text first.")
@@ -32,32 +41,41 @@ if st.button("Convert to Speech"):
         audio_bytes = BytesIO()
 
         if voice_choice == "Filipino (Default)":
-            # gTTS for Filipino
+            # Use gTTS for Filipino
+            tts = gTTS(text, lang="tl")
+            tts.write_to_fp(audio_bytes)
+            audio_bytes.seek(0)
+        else:
+            # Use Google Cloud TTS for English
+            voice_map = {
+                "English - Male (John)": "en-US-JohnNeural",
+                "English - Male (Matthew)": "en-US-Standard-B",
+                "English - Female (Joanna)": "en-US-Standard-A",
+                "English - Female (Aria)": "en-US-Neural2-C",
+            }
+
+            voice_name = voice_map[voice_choice]
+            client = texttospeech.TextToSpeechClient()
+
+            synthesis_input = texttospeech.SynthesisInput(text=text)
+            voice = texttospeech.VoiceSelectionParams(
+                language_code="en-US",
+                name=voice_name,
+            )
+            audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+
             try:
-                tts = gTTS(text, lang="tl")
-                tts.write_to_fp(audio_bytes)
+                response = client.synthesize_speech(
+                    input=synthesis_input,
+                    voice=voice,
+                    audio_config=audio_config,
+                )
+                audio_bytes.write(response.audio_content)
                 audio_bytes.seek(0)
             except Exception as e:
-                st.error(f"Error generating Filipino speech: {e}")
+                st.error(f"Google TTS Error: {e}")
 
-        else:
-            # Edge-TTS for English voices
-            voice_map = {
-                "English - Male (Ryan)": "en-US-RyanNeural",
-                "English - Male (Eric)": "en-US-EricNeural",
-                "English - Male (Guy)": "en-US-GuyNeural",
-                "English - Female (Jenny)": "en-US-JennyNeural",
-                "English - Female (Aria)": "en-US-AriaNeural",
-            }
-            voice = voice_map[voice_choice]
-
-            async def synthesize():
-                try:
-                    tts = edge_tts.Communicate(text, voice)
-                    async for chunk in tts.stream():
-                        if chunk["type"] == "audio":
-                            audio_bytes.write(chunk["data"])
-                except aiohttp.ClientConnectorError:
-                    st.error("❌ Unable to connect to Microsoft TTS service. Please check your internet connection.")
-                except Exception as e:
-                    st.error(f"⚠️ TTS Error: {str(e)}")
+        if audio_bytes.getbuffer().nbytes > 0:
+            st.success("✅ Speech generated successfully!")
+            st.audio(audio_bytes, format="audio/mp3")
+            st.download_button("Download MP3", audio_bytes, file_name="speech.mp3")
