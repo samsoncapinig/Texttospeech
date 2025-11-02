@@ -1,5 +1,5 @@
 """
-Streamlit Text-to-Speech App using Microsoft Edge TTS
+Streamlit Text-to-Speech App using Microsoft Edge TTS (Robust Version)
 File: streamlit_edge_tts_app.py
 
 This single-file repository contains a Streamlit app that converts input text to
@@ -9,22 +9,18 @@ Features
 - Choose from a selection of natural male and female English neural voices.
 - Live controls for speaking rate and volume (via SSML prosody attributes).
 - Play audio in the browser and download the generated MP3.
+- Built-in fallback handling for SSML or network issues.
 - Small, single-file app ready to upload to GitHub and run with Streamlit.
 
 Requirements (put into requirements.txt in your repo):
 streamlit>=1.20
 edge-tts>=2.0.0
 
-Note on Edge TTS
-- The `edge-tts` Python package calls Microsoft Text-to-Speech endpoints under the hood and
-  streams neural voices. The package is widely used and supports many high-quality neural
-  voices (US/UK/AU/CA English, etc.). Network access is required to synthesize audio.
-
 How to run
 1. Create a virtualenv (recommended) and install requirements:
    python -m venv .venv
    source .venv/bin/activate   # Linux / macOS
-   .venv\Scripts\activate     # Windows
+   .venv\\Scripts\\activate     # Windows
    pip install -r requirements.txt
 
 2. Run the Streamlit app:
@@ -49,16 +45,16 @@ import edge_tts
 async def synthesize_to_file_async(text: str, voice: str, rate: str = "0%", volume: str = "0dB", output_path: str = "output.mp3"):
     """
     Use edge-tts to synthesize `text` with the given `voice`.
-    rate: e.g. "+0%", "-10%", "0%"
-    volume: e.g. "0dB", "-3dB", "+3dB"
-    Saves MP3 to output_path.
+    Includes a fallback to plain text if SSML fails.
     """
-    # Build SSML wrapper to allow rate and volume control
-    ssml = f"""<speak><prosody rate=\"{rate}\" volume=\"{volume}\">{escape_xml(text)}</prosody></speak>"""
-
-    communicate = edge_tts.Communicate(ssml, voice)
-    # edge-tts Communicate.save writes the audio to a file path
-    await communicate.save(output_path)
+    ssml = f'<speak version="1.0" xml:lang="en-US"><voice name="{voice}"><prosody rate="{rate}" volume="{volume}">{escape_xml(text)}</prosody></voice></speak>'
+    try:
+        communicate = edge_tts.Communicate(ssml, voice)
+        await communicate.save(output_path)
+    except Exception as e:
+        # Fallback to plain text synthesis if SSML fails
+        communicate = edge_tts.Communicate(text, voice)
+        await communicate.save(output_path)
     return output_path
 
 
@@ -72,7 +68,6 @@ def synthesize_to_file(text: str, voice: str, rate: str = "0%", volume: str = "0
         output_path = tmp.name
         tmp.close()
 
-    # Run async synth
     asyncio.run(synthesize_to_file_async(text, voice, rate, volume, output_path))
 
     with open(output_path, "rb") as f:
@@ -84,7 +79,6 @@ def synthesize_to_file(text: str, voice: str, rate: str = "0%", volume: str = "0
     return data
 
 
-# Minimal escaping for XML used inside SSML
 def escape_xml(text: str) -> str:
     return (
         text.replace("&", "&amp;")
@@ -98,11 +92,8 @@ def escape_xml(text: str) -> str:
 # -----------------------------
 # Voice lists (male/female suggestions)
 # -----------------------------
-# edge-tts supports many voices. Below are some commonly available Neural voices.
-# You can extend this list or let users type a voice name directly.
 MALE_VOICES = [
     "en-US-GuyNeural",
-    "en-US-AriaNeural",  # Aria is female but included for variety in default
     "en-GB-RyanNeural",
     "en-AU-WilliamNeural",
     "en-CA-LiamNeural",
@@ -132,7 +123,6 @@ st.markdown(
     """
 )
 
-# Layout
 col1, col2 = st.columns([3, 1])
 
 with col1:
@@ -148,7 +138,6 @@ with col2:
         voice = st.selectbox("Select voice", ALL_VOICES, index=0)
 
     rate_pct = st.slider("Speaking rate (percent)", min_value=-50, max_value=50, value=0, step=5)
-    # Map slider numeric to SSML percent string
     rate_str = f"{rate_pct}%"
 
     volume_db = st.slider("Volume (dB)", min_value=-10, max_value=10, value=0, step=1)
@@ -156,7 +145,6 @@ with col2:
 
     st.write("Voice preview:", voice)
 
-# Controls: Convert button
 convert = st.button("Convert to speech")
 
 if convert:
@@ -168,11 +156,8 @@ if convert:
                 mp3_bytes = synthesize_to_file(text_input, voice, rate_str, volume_str)
 
             st.success("Synthesis complete — play below")
-
-            # Play audio
             st.audio(mp3_bytes)
 
-            # Download button
             st.download_button(
                 label="Download MP3",
                 data=mp3_bytes,
@@ -181,9 +166,9 @@ if convert:
             )
 
         except Exception as e:
-            st.exception(e)
+            st.error(f"Error: {str(e)}")
+            st.info("Try a different voice or check your internet connection.")
 
-# Helpful notes / tips
 st.markdown("---")
 st.subheader("Tips and notes")
 st.markdown(
@@ -194,9 +179,8 @@ st.markdown(
     """
 )
 
-# Small debug / advanced section (collapsible)
 with st.expander("Advanced / Debug"):
-    st.write("Edge-tts is installed version:")
+    st.write("Edge-tts version:")
     try:
         import pkg_resources
         ver = pkg_resources.get_distribution("edge-tts").version
@@ -206,6 +190,5 @@ with st.expander("Advanced / Debug"):
     st.write("Selected voice:", voice)
     st.write("Rate (SSML):", rate_str)
     st.write("Volume (SSML):", volume_str)
-
 
 # EOF
