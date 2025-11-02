@@ -1,143 +1,211 @@
-# Streamlit Audio Transcriber + Edge-TTS Voice Playback
-#
-# Enhancements:
-# ✅ Added text-to-speech using Microsoft Edge-TTS (neural voices)
-# ✅ Realistic male/female English voices (US, UK, AU, IN)
-# ✅ Allows playback and download of the spoken transcript
-#
-# Requirements: streamlit, faster-whisper, torch, edge-tts, ffmpeg installed
+"""
+Streamlit Text-to-Speech App using Microsoft Edge TTS
+File: streamlit_edge_tts_app.py
+
+This single-file repository contains a Streamlit app that converts input text to
+natural-sounding English speech using Microsoft Neural voices via the `edge-tts` package.
+
+Features
+- Choose from a selection of natural male and female English neural voices.
+- Live controls for speaking rate and volume (via SSML prosody attributes).
+- Play audio in the browser and download the generated MP3.
+- Small, single-file app ready to upload to GitHub and run with Streamlit.
+
+Requirements (put into requirements.txt in your repo):
+streamlit>=1.20
+edge-tts>=2.0.0
+
+Note on Edge TTS
+- The `edge-tts` Python package calls Microsoft Text-to-Speech endpoints under the hood and
+  streams neural voices. The package is widely used and supports many high-quality neural
+  voices (US/UK/AU/CA English, etc.). Network access is required to synthesize audio.
+
+How to run
+1. Create a virtualenv (recommended) and install requirements:
+   python -m venv .venv
+   source .venv/bin/activate   # Linux / macOS
+   .venv\Scripts\activate     # Windows
+   pip install -r requirements.txt
+
+2. Run the Streamlit app:
+   streamlit run streamlit_edge_tts_app.py
+
+3. Open the URL shown by Streamlit (usually http://localhost:8501).
+
+License: MIT (feel free to reuse)
+
+"""
 
 import streamlit as st
-from faster_whisper import WhisperModel
 import tempfile
+import asyncio
 import os
 from pathlib import Path
-import math
-import uuid
-import subprocess
-import asyncio
 import edge_tts
 
-st.set_page_config(page_title='Audio → Text + Neural Voices', layout='wide')
+# -----------------------------
+# Helper: Synthesize with edge-tts
+# -----------------------------
+async def synthesize_to_file_async(text: str, voice: str, rate: str = "0%", volume: str = "0dB", output_path: str = "output.mp3"):
+    """
+    Use edge-tts to synthesize `text` with the given `voice`.
+    rate: e.g. "+0%", "-10%", "0%"
+    volume: e.g. "0dB", "-3dB", "+3dB"
+    Saves MP3 to output_path.
+    """
+    # Build SSML wrapper to allow rate and volume control
+    ssml = f"""<speak><prosody rate=\"{rate}\" volume=\"{volume}\">{escape_xml(text)}</prosody></speak>"""
 
-st.title('🎧 Audio → Text Transcriber with Microsoft Edge Neural Voices')
-st.markdown(
-    'Upload an MP3 or M4A file. The app will transcribe it with **faster-whisper**, '
-    'and you can listen to the transcript using **Microsoft Edge-TTS** voices.'
-)
+    communicate = edge_tts.Communicate(ssml, voice)
+    # edge-tts Communicate.save writes the audio to a file path
+    await communicate.save(output_path)
+    return output_path
 
-uploaded_file = st.file_uploader('Upload audio file (MP3 or M4A)', type=['mp3', 'm4a'])
 
-col1, col2, col3 = st.columns([1,1,1])
-with col1:
-    chunk_minutes = st.number_input('Chunk size (minutes)', min_value=1, max_value=60, value=10)
-with col2:
-    model_size = st.selectbox('Whisper model size', ['tiny', 'base', 'small', 'medium', 'large-v2'], index=2)
-with col3:
-    device = st.selectbox('Device', ['cpu', 'cuda'], index=0)
+def synthesize_to_file(text: str, voice: str, rate: str = "0%", volume: str = "0dB", output_path: str = None):
+    """
+    Synchronous wrapper for Streamlit usage.
+    Returns bytes of the mp3 file.
+    """
+    if output_path is None:
+        tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+        output_path = tmp.name
+        tmp.close()
 
-def run_ffmpeg(input_path, output_path, extra_args):
-    cmd = ["ffmpeg", "-y", "-i", str(input_path)] + extra_args + [str(output_path)]
-    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Run async synth
+    asyncio.run(synthesize_to_file_async(text, voice, rate, volume, output_path))
 
-# Async voice synthesis using Edge-TTS
-async def synthesize_voice(text, voice_name, output_file):
-    tts = edge_tts.Communicate(text, voice_name)
-    await tts.save(output_file)
-
-if uploaded_file is not None:
-    st.info('Saving and preparing audio...')
-    tmp_dir = Path(tempfile.gettempdir()) / f"st_transcribe_{uuid.uuid4().hex}"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    input_path = tmp_dir / uploaded_file.name
-    with open(input_path, 'wb') as f:
-        f.write(uploaded_file.getbuffer())
-
-    st.write(f'Uploaded: {uploaded_file.name}')
-
-    # Convert to WAV (mono, 16kHz, 16-bit PCM)
-    wav_path = tmp_dir / (input_path.stem + '.wav')
-    st.write('Converting to WAV...')
-    run_ffmpeg(input_path, wav_path, ["-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le"])
-    
-    # Get duration
-    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-           "-of", "default=noprint_wrappers=1:nokey=1", str(wav_path)]
-    result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    duration_seconds = float(result.stdout.decode().strip())
-    chunk_seconds = int(chunk_minutes * 60)
-    num_chunks = math.ceil(duration_seconds / chunk_seconds)
-    st.write(f'Splitting into {num_chunks} chunk(s)...')
-
-    chunk_paths = []
-    for i in range(num_chunks):
-        start_time = i * chunk_seconds
-        chunk_file = tmp_dir / f"chunk_{i:04d}.wav"
-        run_ffmpeg(wav_path, chunk_file, ["-ss", str(start_time), "-t", str(chunk_seconds)])
-        chunk_paths.append(str(chunk_file))
-
-    # Load model
-    st.write('Loading Whisper model...')
+    with open(output_path, "rb") as f:
+        data = f.read()
     try:
-        model = WhisperModel(model_size, device=device, compute_type='float16' if device=='cuda' else 'int8')
-    except Exception as e:
-        st.error(f'Error loading model: {e}')
-        st.stop()
+        os.remove(output_path)
+    except Exception:
+        pass
+    return data
 
-    # Transcribe chunks
-    final_transcript = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
 
-    for idx, cpath in enumerate(chunk_paths):
-        status_text.info(f'Transcribing chunk {idx+1}/{len(chunk_paths)}...')
-        segments, _ = model.transcribe(cpath, beam_size=5, language='en')
-        chunk_text = ' '.join([s.text for s in segments])
-        final_transcript.append(chunk_text.strip())
-        progress_bar.progress((idx+1)/len(chunk_paths))
-
-    status_text.success('✅ Transcription complete!')
-
-    # Combine
-    full_text = '\n\n'.join(final_transcript)
-
-    st.subheader('📝 Transcription (English)')
-    st.text_area('Transcript', value=full_text, height=400)
-
-    st.download_button('📄 Download transcript (.txt)',
-                       data=full_text,
-                       file_name=f"transcript_{input_path.stem}.txt",
-                       mime='text/plain')
-
-    # --- Neural Voice Section ---
-    st.markdown('---')
-    st.subheader('🗣️ Listen to the Transcript (Microsoft Edge Neural Voices)')
-
-    voice_option = st.selectbox(
-        'Select a Voice',
-        {
-            "Female (US) - Aria": "en-US-AriaNeural",
-            "Male (US) - Guy": "en-US-GuyNeural",
-            "Female (UK) - Libby": "en-GB-LibbyNeural",
-            "Male (UK) - Ryan": "en-GB-RyanNeural",
-            "Female (Australia) - Natasha": "en-AU-NatashaNeural",
-            "Male (India) - Prabhat": "en-IN-PrabhatNeural"
-        }
+# Minimal escaping for XML used inside SSML
+def escape_xml(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&apos;")
     )
 
-    if st.button('Generate Voice'):
-        st.info('Generating natural voice... please wait.')
-        voice_file = tmp_dir / "transcript_voice.mp3"
-        voice_text = full_text[:4000]  # Avoid overly long input to TTS
-        asyncio.run(synthesize_voice(voice_text, voice_option, voice_file))
 
-        st.audio(str(voice_file), format='audio/mp3')
-        with open(voice_file, "rb") as f:
-            st.download_button('🎧 Download Voice MP3', f, file_name="transcript_voice.mp3")
+# -----------------------------
+# Voice lists (male/female suggestions)
+# -----------------------------
+# edge-tts supports many voices. Below are some commonly available Neural voices.
+# You can extend this list or let users type a voice name directly.
+MALE_VOICES = [
+    "en-US-GuyNeural",
+    "en-US-AriaNeural",  # Aria is female but included for variety in default
+    "en-GB-RyanNeural",
+    "en-AU-WilliamNeural",
+    "en-CA-LiamNeural",
+]
 
-    st.success('All done!')
+FEMALE_VOICES = [
+    "en-US-JennyNeural",
+    "en-US-AmberNeural",
+    "en-GB-LibbyNeural",
+    "en-AU-SallyNeural",
+    "en-CA-ClaraNeural",
+]
 
-    st.markdown('---')
-    st.markdown('**Dependencies**')
-    st.code('streamlit\nfaster-whisper\ntorch\nedge-tts')
+ALL_VOICES = sorted(set(MALE_VOICES + FEMALE_VOICES))
+
+
+# -----------------------------
+# Streamlit UI
+# -----------------------------
+st.set_page_config(page_title="Natural TTS (Edge-TTS) — Streamlit", page_icon=":microphone:")
+st.title("Natural English Text→Speech (Edge-TTS)")
+st.markdown(
+    """
+    Simple Streamlit app to synthesize natural-sounding English speech.
+
+    Choose a voice, enter text, and click **Convert**. You can then play the audio or download it.
+    """
+)
+
+# Layout
+col1, col2 = st.columns([3, 1])
+
+with col1:
+    text_input = st.text_area("Enter text to speak", value="Hello — this is a sample of natural-sounding English speech.", height=180)
+
+with col2:
+    gender = st.radio("Voice gender", options=["Female", "Male", "Show all"], index=0)
+    if gender == "Female":
+        voice = st.selectbox("Select voice", FEMALE_VOICES, index=0)
+    elif gender == "Male":
+        voice = st.selectbox("Select voice", MALE_VOICES, index=0)
+    else:
+        voice = st.selectbox("Select voice", ALL_VOICES, index=0)
+
+    rate_pct = st.slider("Speaking rate (percent)", min_value=-50, max_value=50, value=0, step=5)
+    # Map slider numeric to SSML percent string
+    rate_str = f"{rate_pct}%"
+
+    volume_db = st.slider("Volume (dB)", min_value=-10, max_value=10, value=0, step=1)
+    volume_str = f"{volume_db}dB"
+
+    st.write("Voice preview:", voice)
+
+# Controls: Convert button
+convert = st.button("Convert to speech")
+
+if convert:
+    if not text_input.strip():
+        st.error("Please enter some text to synthesize.")
+    else:
+        try:
+            with st.spinner("Synthesizing — contacting Edge TTS..."):
+                mp3_bytes = synthesize_to_file(text_input, voice, rate_str, volume_str)
+
+            st.success("Synthesis complete — play below")
+
+            # Play audio
+            st.audio(mp3_bytes)
+
+            # Download button
+            st.download_button(
+                label="Download MP3",
+                data=mp3_bytes,
+                file_name="speech.mp3",
+                mime="audio/mpeg",
+            )
+
+        except Exception as e:
+            st.exception(e)
+
+# Helpful notes / tips
+st.markdown("---")
+st.subheader("Tips and notes")
+st.markdown(
+    """
+    - If you see network errors, check that your environment has internet access. `edge-tts` needs to reach Microsoft's speech endpoints.
+    - To see the full list of supported voices, install `edge-tts` and run: `python -m edge_tts --list-voices` from your shell.
+    - For long-form text consider batching into smaller paragraphs to avoid timeouts.
+    """
+)
+
+# Small debug / advanced section (collapsible)
+with st.expander("Advanced / Debug"):
+    st.write("Edge-tts is installed version:")
+    try:
+        import pkg_resources
+        ver = pkg_resources.get_distribution("edge-tts").version
+        st.write(ver)
+    except Exception:
+        st.write("edge-tts not installed or cannot detect version")
+    st.write("Selected voice:", voice)
+    st.write("Rate (SSML):", rate_str)
+    st.write("Volume (SSML):", volume_str)
+
+
+# EOF
